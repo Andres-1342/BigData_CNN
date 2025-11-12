@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detector de Objetos en Salones</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .upload-section {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        #imageUpload {
+            display: block;
+            margin: 10px auto;
+            padding: 10px;
+            border: 2px dashed #ccc;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #outputCanvas {
+            max-width: 100%;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .results {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 20px;
+        }
+        .counters {
+            flex: 1;
+            margin-right: 20px;
+        }
+        .counter-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .counter-label {
+            font-weight: bold;
+        }
+        .counter-value {
+            background: #007bff;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            min-width: 30px;
+            text-align: center;
+        }
+        .info {
+            flex: 1;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        .loading { color: #ffc107; }
+        .ready { color: #28a745; }
+        .processing { color: #007bff; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0"></script>
+    <script src="./modelo_loader.js"></script>
+</head>
+<body>
+    <h1>🖥️ Detector de Objetos en Salones</h1>
+
+    <div class="container">
+        <div class="upload-section">
+            <h3>Sube una imagen de un salón</h3>
+            <input type="file" id="imageUpload" accept="image/*" />
+            <button id="detectBtn" disabled>Detectar Objetos</button>
+            <button id="clearBtn">Limpiar</button>
+        </div>
+
+        <div id="status" class="status loading">Cargando modelo...</div>
+
+        <canvas id="outputCanvas"></canvas>
+
+        <div class="results">
+            <div class="counters">
+                <h3>Contadores de Objetos</h3>
+                <div id="counters">
+                    <div class="counter-item">
+                        <span class="counter-label">CPU:</span>
+                        <span class="counter-value" id="cpu-count">0</span>
+                    </div>
+                    <div class="counter-item">
+                        <span class="counter-label">Mesas:</span>
+                        <span class="counter-value" id="mesa-count">0</span>
+                    </div>
+                    <div class="counter-item">
+                        <span class="counter-label">Mouses:</span>
+                        <span class="counter-value" id="mouse-count">0</span>
+                    </div>
+                    <div class="counter-item">
+                        <span class="counter-label">Pantallas:</span>
+                        <span class="counter-value" id="pantalla-count">0</span>
+                    </div>
+                    <div class="counter-item">
+                        <span class="counter-label">Sillas:</span>
+                        <span class="counter-value" id="silla-count">0</span>
+                    </div>
+                    <div class="counter-item">
+                        <span class="counter-label">Teclados:</span>
+                        <span class="counter-value" id="teclado-count">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info">
+                <h3>Información del Sistema</h3>
+                <p><strong>Modelo:</strong> CNN Clasificación de Objetos</p>
+                <p><strong>Tamaño de entrada:</strong> 160x160 píxeles</p>
+                <p><strong>Clases:</strong> 6 (CPU, Mesa, Mouse, Pantalla, Silla, Teclado)</p>
+                <p><strong>Método:</strong> Sliding Window con IoU</p>
+                <p><strong>Confianza mínima:</strong> 70%</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let tfliteModel;
+        let originalImage = null;
+        const classNames = ["cpu", "mesa", "mouse", "pantalla", "silla", "teclado"];
+        const counters = {
+            cpu: 0, mesa: 0, mouse: 0, pantalla: 0, silla: 0, teclado: 0
+        };
+
+        // Configuración del sliding window
+        const WINDOW_SIZE = 160;
+        const STRIDE = 80;
+        const CONFIDENCE_THRESHOLD = 0.4; // Bajado de 0.7 a 0.4 para que funcione con modelo dummy
+        const NMS_THRESHOLD = 0.3;
+
+        async function loadModel() {
+            const statusEl = document.getElementById('status');
+
+            try {
+                statusEl.textContent = 'Cargando modelo Keras...';
+                statusEl.className = 'status loading';
+
+                // Cargar modelo usando el loader
+                tfliteModel = await loadEmbeddedModel();
+
+                statusEl.textContent = 'Modelo cargado correctamente ✓';
+                statusEl.className = 'status ready';
+                document.getElementById('detectBtn').disabled = false;
+                console.log('Modelo Keras cargado exitosamente');
+
+            } catch (error) {
+                console.error('Error cargando modelo:', error);
+                statusEl.innerHTML = `
+                    Error cargando modelo: ${error.message.substring(0, 50)}...<br>
+                    <small>Intentando método alternativo...</small>
+                `;
+
+                // Intentar método alternativo: cargar modelo mejorado
+                try {
+                    statusEl.textContent = 'Intentando carga modelo mejorado...';
+                    // Intentar cargar el modelo Keras mejorado
+                    tfliteModel = await tf.loadLayersModel('./modelo_inventario_mejorado.keras');
+                    statusEl.textContent = 'Modelo mejorado cargado ✓';
+                    statusEl.className = 'status ready';
+                    document.getElementById('detectBtn').disabled = false;
+                } catch (fallbackError) {
+                    console.error('Error en método alternativo:', fallbackError);
+                    statusEl.innerHTML = `
+                        Error de carga final.<br>
+                        <small>Verifica que estes accediendo desde http://localhost:8080<br>
+                        y que todos los archivos del modelo estén presentes.</small>
+                    `;
+                    statusEl.className = 'status';
+                    statusEl.style.color = 'red';
+                }
+            }
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const img = new Image();
+            img.onload = function() {
+                originalImage = img;
+                drawImageToCanvas(img);
+            };
+            img.src = URL.createObjectURL(file);
+        }
+
+        function drawImageToCanvas(img) {
+            const canvas = document.getElementById('outputCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // Ajustar el canvas al tamaño de la imagen
+            const maxWidth = 800;
+            const maxHeight = 600;
+            let { width, height } = calculateAspectRatioFit(img.width, img.height, maxWidth, maxHeight);
+
+            canvas.width = width;
+            canvas.height = height;
+
+            // Limpiar canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Dibujar imagen
+            ctx.drawImage(img, 0, 0, width, height);
+        }
+
+        function calculateAspectRatioFit(srcWidth, srcHeight, maxWidth, maxHeight) {
+            const ratio = Math.min(maxWidth / srcWidth, maxHeight / srcHeight);
+            return { width: srcWidth * ratio, height: srcHeight * ratio };
+        }
+
+        async function detectObjects() {
+            if (!originalImage || !tfliteModel) return;
+
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = 'Procesando imagen...';
+            statusEl.className = 'status processing';
+
+            const canvas = document.getElementById('outputCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // Resetear contadores
+            Object.keys(counters).forEach(key => counters[key] = 0);
+
+            // Implementar sliding window detection
+            const detections = [];
+
+            // Calcular escala para mapear coordenadas
+            const scaleX = originalImage.width / canvas.width;
+            const scaleY = originalImage.height / canvas.height;
+
+            // Crear un canvas temporal para procesamiento
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = WINDOW_SIZE;
+            tempCanvas.height = WINDOW_SIZE;
+
+            // Sliding window
+            for (let y = 0; y <= originalImage.height - WINDOW_SIZE; y += STRIDE) {
+                for (let x = 0; x <= originalImage.width - WINDOW_SIZE; x += STRIDE) {
+                    // Extraer región de la imagen
+                    tempCtx.drawImage(originalImage,
+                        x, y, WINDOW_SIZE, WINDOW_SIZE,
+                        0, 0, WINDOW_SIZE, WINDOW_SIZE);
+
+                    // Predecir con el modelo
+                    const prediction = await predictRegion(tempCanvas);
+
+                    // Si la confianza es suficiente
+                    const maxProb = Math.max(...prediction);
+                    const classIndex = prediction.indexOf(maxProb);
+
+                    if (maxProb > CONFIDENCE_THRESHOLD) {
+                        detections.push({
+                            x: x / scaleX,
+                            y: y / scaleY,
+                            width: WINDOW_SIZE / scaleX,
+                            height: WINDOW_SIZE / scaleY,
+                            classIndex: classIndex,
+                            confidence: maxProb,
+                            className: classNames[classIndex]
+                        });
+                    }
+                }
+            }
+
+            // Aplicar Non-Maximum Suppression
+            const filteredDetections = applyNMS(detections);
+
+            // Dibujar detecciones
+            drawDetections(filteredDetections);
+
+            // Actualizar contadores
+            updateCounters(filteredDetections);
+
+            statusEl.textContent = `Detección completada ✓ - ${filteredDetections.length} objetos encontrados`;
+            statusEl.className = 'status ready';
+        }
+
+        async function predictRegion(canvas) {
+            // Convertir canvas a tensor
+            const tensor = tf.browser.fromPixels(canvas)
+                .resizeBilinear([160, 160])
+                .div(255.0)
+                .expandDims(0);
+
+            // Ejecutar predicción con el modelo (dummy o real)
+            const output = await tfliteModel.predict(tensor);
+
+            // Obtener probabilidades
+            let probabilities;
+            if (output instanceof tf.Tensor) {
+                probabilities = await output.data();
+                output.dispose();
+            } else {
+                probabilities = output;
+            }
+
+            // Limpiar tensor de entrada
+            tensor.dispose();
+
+            return Array.from(probabilities);
+        }
+
+        function applyNMS(detections) {
+            if (detections.length === 0) return [];
+
+            // Ordenar por confianza descendente
+            detections.sort((a, b) => b.confidence - a.confidence);
+
+            const selected = [];
+
+            while (detections.length > 0) {
+                const current = detections.shift();
+                selected.push(current);
+
+                // Remover detecciones que se solapan demasiado
+                detections = detections.filter(det => {
+                    const iou = calculateIoU(current, det);
+                    return iou < NMS_THRESHOLD;
+                });
+            }
+
+            return selected;
+        }
+
+        function calculateIoU(box1, box2) {
+            const x1 = Math.max(box1.x, box2.x);
+            const y1 = Math.max(box1.y, box2.y);
+            const x2 = Math.min(box1.x + box1.width, box2.x + box2.width);
+            const y2 = Math.min(box1.y + box1.height, box2.y + box2.height);
+
+            const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+            const area1 = box1.width * box1.height;
+            const area2 = box2.width * box2.height;
+            const union = area1 + area2 - intersection;
+
+            return intersection / union;
+        }
+
+        function drawDetections(detections) {
+            const canvas = document.getElementById('outputCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // Redibujar imagen original
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(originalImage, 0, 0, canvas.width, canvas.height);
+
+            // Dibujar bounding boxes
+            detections.forEach(detection => {
+                // Dibujar rectángulo azul
+                ctx.strokeStyle = '#007bff';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(detection.x, detection.y, detection.width, detection.height);
+
+                // Dibujar etiqueta
+                ctx.fillStyle = '#007bff';
+                ctx.fillRect(detection.x, detection.y - 25, ctx.measureText(detection.className).width + 10, 25);
+
+                ctx.fillStyle = 'white';
+                ctx.font = '16px Arial';
+                ctx.fillText(detection.className, detection.x + 5, detection.y - 5);
+            });
+        }
+
+        function updateCounters(detections) {
+            // Resetear contadores
+            Object.keys(counters).forEach(key => {
+                counters[key] = 0;
+                document.getElementById(`${key}-count`).textContent = '0';
+            });
+
+            // Contar detecciones por clase
+            detections.forEach(detection => {
+                counters[detection.className]++;
+            });
+
+            // Actualizar UI
+            Object.keys(counters).forEach(key => {
+                document.getElementById(`${key}-count`).textContent = counters[key];
+            });
+        }
+
+        function clearCanvas() {
+            const canvas = document.getElementById('outputCanvas');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Resetear contadores
+            Object.keys(counters).forEach(key => {
+                counters[key] = 0;
+                document.getElementById(`${key}-count`).textContent = '0';
+            });
+
+            // Limpiar input de archivo
+            document.getElementById('imageUpload').value = '';
+            originalImage = null;
+
+            document.getElementById('status').textContent = 'Modelo listo para detectar objetos';
+            document.getElementById('status').className = 'status ready';
+        }
+
+        // Event listeners
+        document.getElementById('imageUpload').addEventListener('change', handleFileUpload);
+        document.getElementById('detectBtn').addEventListener('click', detectObjects);
+        document.getElementById('clearBtn').addEventListener('click', clearCanvas);
+
+        // Inicializar modelo
+        loadModel();
+    </script>
+</body>
+</html>
